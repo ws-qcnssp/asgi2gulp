@@ -1,4 +1,6 @@
 asgi2gulp.egg-info/
 build/
 dist/
-
+test_local/
+run_build
+build_and_install_locally

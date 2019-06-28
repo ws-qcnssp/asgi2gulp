@@ -10,7 +10,7 @@ with open('LICENSE') as f:
 
 setup(
     name='asgi2gulp',
-    version='0.1.6',
+    version='0.1.7',
     description='Amorphous Structure Generator Interface to GULP',
     long_description=readme,
     long_description_content_type='text/x-rst',

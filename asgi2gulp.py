@@ -70,11 +70,26 @@ def distance(At1, At2):
 	dx = At1.x - At2.x 
 	dy = At1.y - At2.y 
 	dz = At1.z - At2.z
-	result = ( dx ** 2 + dy ** 2 + dz **2 ) ** 0.5
+	result = ( dx ** 2 + dy ** 2 + dz ** 2 ) ** 0.5
 	return result
 
 def vec_length(x, y, z):
 	res = ( x ** 2 + y ** 2 + z **2 ) ** 0.5
+	return res
+	
+def vec_dot(x1, y1, z1, x2, y2, z2):
+	res = x1 * x2 + y1 * y2 + z1 * z2
+	return res
+	
+def vec_cos(x1, y1, z1, x2, y2, z2):
+	res = vec_dot(x1, y1, z1, x2, y2, z2) / ( vec_length(x1, y1, z1) * vec_length(x2, y2, z2) )
+	return res
+	
+def vec_distance(x1, y1, z1, x2, y2, z2):
+	dx = x1 - x2
+	dy = y1 - y2
+	dz = z1 - z2
+	result = ( dx ** 2 + dy ** 2 + dz ** 2 ) ** 0.5
 	return res
 	
 def total_distance(mol1, mol2):
@@ -264,6 +279,10 @@ class Config(object):
 		self.connectionType = "O-H"
 		self.saturationType = "O-H"
 		self.saturationMethod = "connector" # default / connector
+		self.program = "gulp"
+		self.nodeAtoms = ["Si"]
+		self.bridgeAtoms = ["O"]
+		self.terminalAtoms = ["H"]
 		
 config = Config()
 
@@ -287,6 +306,102 @@ class Point(object):
 		self.y = self.y + num
 		
 			
+class AnalysisUtils(object):
+	def __init__(self):
+		pass
+		
+	def plot_pdf(self, bonds, filename, bins = 10):
+		if bins > 0 and len(bonds) >= bins:
+			lengths = []
+			for bond in bonds:
+				break
+			bond_type = bond.type
+			for bond in bonds:
+				lengths.append(bond.length())
+			plt.gcf().clear()
+			plt.hist(lengths, histtype = 'bar', bins = bins)
+			longname = filename + '_pdf_' + bond_type
+			plt.savefig(longname +'.png')
+			with open(longname +'.dat', 'w') as f:
+				f.write('\n'.join([str(length) for length in lengths]))
+			print('PDF plot saved as ' + longname + '.png, data written in .dat file.')
+		else:
+			print('ERROR: Incorrect number of bins or bonds number lower than number of bins.')
+			print('Plotting PDF aborted.')
+	
+	def plot_all_pdfs(self, mol, filename, bins = 10):
+		types = mol.get_bond_types()
+		if len(types) > 0:
+			for bond_type in types:
+				bonds = mol.get_bonds_of_type(bond_type)
+				self.plot_pdf(bonds, filename, bins)
+				
+	def find_chain_unfiltered(self, mol, chain_string):
+		chain_atoms = chain_string.split()
+		counter = 0
+		chains = list()
+		for chain_atom in chain_atoms:
+			atoms = mol.get_atoms_of_type(chain_atom)
+			if counter == 0:
+				for first_step_atom in atoms:
+					chains.append([first_step_atom])
+				counter += 1
+			else:
+				new_chains = list()
+				for current_chain in chains:
+					for current_atom in atoms:
+						if current_atom.connected_to_chain(current_chain):
+							new_chain = list(current_chain)
+							new_chain.append(current_atom)
+							new_chains.append(new_chain)
+				chains.clear()
+				for new_ch in new_chains:
+					chains.append(new_ch)
+				counter += 1
+		return chains
+		
+	def find_chains(self, mol, chain_string):
+		chains = self.find_chain_unfiltered(mol, chain_string)
+		pos = len(chains) - 1
+		while pos > 0:
+			chain_at_pos = chains[pos]
+			unique = True
+			for checker in range(0, pos):
+				chain_at_checker = chains[checker]
+				set_from_pos = set(chain_at_pos)
+				set_from_checker = set(chain_at_checker)
+				if set_from_pos == set_from_checker:
+					unique = False
+					break
+			if not unique:
+				del chains[pos]
+			pos -= 1
+		return chains
+		
+	def find_cycles(self, mol, cycle_string, method = 'all'):
+		chains = self.find_chains(mol, cycle_string)
+		cycles = list()
+		if method == 'all':
+			for chain in chains:
+				last_atom = chain[-1]
+				first_atom = chain[0]
+				if last_atom.is_bonded_to(first_atom):
+					cycles.append(chain)
+		else:
+			print('ERROR: Method undefined.')
+			return
+		return cycles
+		
+	def print_chains(self, chains):
+		for chain in chains:
+			print('-'.join([atom.name for atom in chain]))
+			
+	def print_cycles(self, cycles):
+		for cycle in cycles:
+			print('c-' + '-'.join([atom.name for atom in cycle]) + '-')
+
+analysisUtils = AnalysisUtils()
+
 class VibUtils(object):
 	def __init__(self):
 		pass
@@ -310,6 +425,100 @@ class VibUtils(object):
 				return 0
 		else:
 			return 0
+			
+	def filter_by_min_disp(self, mol, atomType, minDisp=0.1, withAtoms=False):
+		fiteredVibs = set()
+		for vib in mol.vibs:
+			for disp in vib.disp:
+				atom, x, y, z = disp
+				if atom.type == atomType:
+					vec = vec_length(x,y,z)
+					if vec >= minDisp:
+						if withAtoms:
+							filteredVibs.add((vib, atom))
+						else:
+							filteredVibs.add(vib)
+		return filteredVibs
+		
+	def filter_by_min_stretch(self, mol, bondType, minStretch=0.1, minAngle=170, withBonds=False):
+		bonds = mol.get_bonds_of_type(bondType)
+		filteredVibs = set()
+		for vib in mol.vibs:
+			for bond in bonds:
+				dispAt1 = vib.read_disp(bond.at1)
+				dispAt2 = vib.read_disp(bond.at2)
+				at1, x1, y1, z1 = dispAt1
+				at2, x2, y2, z2 = dispAt2
+				cosAngle = vec_cos(x1, y1, z1, x2, y2, z2)
+				if cosAngle <= rad(minAngle):
+					x1d = at1.x + x1
+					y1d = at1.y + y1
+					z1d = at1.z + z1
+					x2d = at2.x + x2
+					y2d = at2.y + y2
+					z2d = at2.z + z2
+					distEq = distance(at1, at2)
+					distDisp = vec_distance(x1d, y1d, z1d, x2d, y2d, z2d)
+					stretch = distDisp - distEq
+					if stretch >= minStrech:
+						if withBonds:
+							filteredVibs.add((vib, bond))
+						else:
+							filteredVibs.add(vib)
+		return filteredVibs
+		
+	def get_average_disp(self, mol):
+		vibsExtended = []
+		atomTypes = list(mol.get_atom_types())
+		for vib in mol.vibs:
+			extended = []
+			extended.append(vib)
+			for atomType in atomTypes:
+				averageDisp = 0
+				countDisp = 0
+				atoms = mol.get_atoms_of_type(atomType)
+				for atom in atoms:
+					x, y, z = vib.read_disp(atom)
+					averageDisp += vec_length(x, y, z)
+					countDisp += 1
+				if countDisp > 0:
+					extended.append(atomType)
+					averageDisp = averageDisp / countDisp
+					extended.append(averageDisp)
+			vibsExtended.append(extended)
+		vibsExtended.sort(key = lambda x: x[0].frequency)
+		return vibsExtended
+		
+	def vibs_only(self, vibsExtended):
+		vibs = set()
+		for vibExtended in vibsExtended:
+			vibs.add(vibExtended[0])
+		return vibs
+		
+	def vibs_extended_print(self, vibsExtended):
+		lines = []
+		for vibExtended in vibsExtended:
+			line = '\t'.join(str(x) for x in vibExtended)
+			lines.append(line)
+		output = '\n'.join(lines)
+		return output
+		
+	def filter_by_max_disp(self, mol, atomType, maxDisp):
+		fiteredVibs = set()
+		for vib in mol.vibs:
+			for disp in vib.disp:
+				atom, x, y, z = disp
+				if atom.type == atomType:
+					vec = vec_length(x,y,z)
+					if vec <= maxDisp:
+						filteredVibs.add(vib)
+		return filteredVibs
+		
+	def print_vibs(self, vibs):
+		line = '{freq} {intIR} {intRaman} {halfwidth}'
+		print(line.format(freq='Frequency', intIR='IR_Intensity', intRaman='Raman_Intensity', halfwidth='Halfwidth'))
+		for vib in vibs:
+			print(line.format(freq=vib.frequency, intIR=vib.intensityIR, intRaman=vib.intensityRaman, halfwidth=vib.halfwidth))
 	
 	def read_vibs(self, mol, inputFile, method = 1, readGoutStart = 0):
 		if readGoutStart == 1:
@@ -609,6 +818,34 @@ class Molecule(object):
 		for atom in self.atoms:
 			if atom.name == name:
 				return atom
+				
+	def get_atom_types(self):
+		atomTypes = set()
+		for atom in self.atoms:
+			if atom.type not in atomTypes:
+				atomTypes.add(atom.type)
+		return atomTypes
+				
+	def get_atoms_of_type(self, atomType):
+		atoms = set()
+		for atom in self.atoms:
+			if atom.type == atomType:
+				atoms.add(atom)
+		return atoms
+				
+	def get_bond_types(self):
+		bondTypes = set()
+		for bond in self.bonds:
+			if bond.type not in bondTypes:
+				bondTypes.add(bond.type)
+		return bondTypes
+				
+	def get_bonds_of_type(self, bondType):
+		bonds = set()
+		for bond in self.bonds:
+			if bond.type == bondType:
+				bonds.add(bond)
+		return bonds
 		
 	def adjust(self, mol2):
 		result = []
@@ -710,17 +947,17 @@ class Molecule(object):
 			self.translation(x, y, z)
 			return (x, y, z)
 			
-	def activate(self, type):
-		ohBonds = set()
+	def activate(self, bondType):
+		activeBonds = set()
 		for b in self.bonds:
-			if b.type == type:
-				ohBonds.add(b)
-		print(str(len(ohBonds)) + ' ' + type + ' bonds found in ' + self.name)
+			if b.type == bondType:
+				activeBonds.add(b)
+		print(str(len(activeBonds)) + ' ' + bondType + ' bonds found in ' + self.name)
 		transVec = 0
 		while 1:
-			bond = random.sample(ohBonds, 1)
+			bond = random.sample(activeBonds, 1)
 			bond = bond[0]
-			if bond.type == type:
+			if bond.type == bondType:
 				at1 = bond.at1
 				at2 = bond.at2
 				if at1.type == "H":
@@ -764,6 +1001,60 @@ class Atom(object):
 		for bond in self.bonds:
 			neighbours.add(bond.second(self))
 		return neighbours
+		
+	def get_nth_neighbours(self, n):
+		neighbours = set()
+		neighbours.add(self)
+		old_neighbours = set()
+		while n > 0:
+			new_neighbours = set()
+			for atom in neighbours:
+				add_neighbours = atom.get_neighbours()
+				for add_neighbour in add_neighbours:
+					if add_neighbour not in neighbours and add_neighbour not in old_neighbours:
+						new_neighbours.add(add_neighbour)
+			for neigh in neighbours:
+				old_neighbours.add(neigh)
+			neighbours.clear()
+			for neigh in new_neighbours:
+				neighbours.add(neigh)
+			n = n - 1
+		return neighbours
+		
+	def get_neighbours_to_nth(self, n):
+		neighbours = set()
+		neighbours.add(self)
+		old_neighbours = set()
+		while n > 0:
+			new_neighbours = set()
+			for atom in neighbours:
+				add_neighbours = atom.get_neighbours()
+				for add_neighbour in add_neighbours:
+					if add_neighbour not in neighbours and add_neighbour not in old_neighbours:
+						new_neighbours.add(add_neighbour)
+			for neigh in neighbours:
+				old_neighbours.add(neigh)
+			neighbours.clear()
+			for neigh in new_neighbours:
+				neighbours.add(neigh)
+			n = n - 1
+		for neigh in neighbours:
+			old_neighbours.add(neigh)
+		return old_neighbours
+		
+	def connected_to_chain(self, chain):
+		if self not in chain:
+			for bond in self.bonds:
+				if bond.second(self) is chain[-1]:
+					return True
+		return False
+		
+	def is_bonded_to(self, anotherAtom):
+		neighbours = self.get_neighbours()
+		if anotherAtom in neighbours:
+			return True
+		else:
+			return False
 		
 	def get_local(self):
 		mol = self.mol
@@ -818,12 +1109,15 @@ class Vibration(object):
 		self.disp = set()
 		Molecule.add_vib(self)
 		
-	def add_disp(self, Atom, x, y, z):
-		self.disp.add((Atom, x, y, z))
+	def __str__(self):
+		return str(self.frequency)
 		
-	def read_disp(self, Atom):
+	def add_disp(self, atom, x, y, z):
+		self.disp.add((atom, x, y, z))
+		
+	def read_disp(self, atom):
 		for disp in self.disp:
-			if disp[0] is Atom:
+			if disp[0] is atom:
 				return (disp[1], disp[2], disp[3])
 		
 	
@@ -952,7 +1246,7 @@ def im(inputFile, vibs = 0):
 		mol = read_xyz(inputFile)
 	return mol
 
-def join(mol1b, mol2b, bondType):
+def join_mol(mol1b, mol2b, bondType):
 	print('Connecting new mer to the system...')
 	# mol1 = copy.deepcopy(mol1b)
 	# mol2 = copy.deepcopy(mol2b)
@@ -1122,15 +1416,22 @@ def run_gulp(ginFile, goutFile):
 
 def run_gulp_para(ginFileName, nProc):
 	caseName = ginFileName.split('.')
-	print('Starting parallel (' + str(nProc) + ' threads) GULP run: ' + caseName[0])
 	start = time.time()
-	p = subprocess.Popen(['mpirun', '-np', str(nProc), GULP_SRC + '/gulp', caseName[0]])
+	if nProc > 1:
+		print('Starting parallel (' + str(nProc) + ' threads) GULP run: ' + caseName[0])
+		p = subprocess.Popen(['mpirun', '-np', str(nProc), GULP_SRC + '/gulp', caseName[0]])
+	else:
+		print('Starting single-thread GULP run: ' + caseName[0])
+		p = subprocess.Popen([GULP_SRC + '/gulp', caseName[0]])
 	out = p.wait()
 	end = time.time()
 	print('GULP calculation has finished in ' + str(end - start) + ' s. ')
 	return out
 	
-def amorph_gen(inputLine, bondType, method="connector"):
+def amorph_gen(inputLine, bondType, cfg = config):
+	return amorph_gen_para(inputLine, bondType, cfg)
+
+def amorph_gen_para(inputLine, bondType, cfg = config):
 	inputText = inputLine
 	print(inputText)
 	inputText = inputText.split()
@@ -1152,7 +1453,6 @@ def amorph_gen(inputLine, bondType, method="connector"):
 		random.shuffle(structureList)
 		for structure in structures:
 			if currentMol == structure.id:
-				# currentMol = copy.deepcopy(structure)
 				currentMol = mol_copy(structure)
 				print("Starting from " + currentMol.name)
 				break
@@ -1162,12 +1462,11 @@ def amorph_gen(inputLine, bondType, method="connector"):
 			molAdd = structureList.pop()
 			for structure in structures:
 				if molAdd == structure.id:
-					# molAdd = copy.deepcopy(structure)
 					molAdd = mol_copy(structure)
 					print("In this step is added: " + molAdd.name)
 					break
 			for trial in range(0, 10):
-				newMol = join(currentMol, molAdd, bondType)
+				newMol = join_mol(currentMol, molAdd, bondType)
 				rubbish = rubbish_check(newMol)
 				if not rubbish:
 					currentMol = newMol
@@ -1178,7 +1477,7 @@ def amorph_gen(inputLine, bondType, method="connector"):
 					if trial == 9:
 						print("Limit of trials has been reached.")
 						return currentMol
-			condensed = condense(currentMol, method)
+			condensed = condense(currentMol, cfg.saturationMethod)
 			if condensed:
 				currentMol = condensed
 				ginFileName = "amorph_" + "{:03d}".format(i+2) + "_c.gin"
@@ -1188,277 +1487,32 @@ def amorph_gen(inputLine, bondType, method="connector"):
 				goutFileName = "amorph_" + "{:03d}".format(i+2) + ".gout"
 			xyzInFileName = "amorph_" + "{:03d}".format(i+2) + "_0.xyz"
 			write_xyz(currentMol, xyzInFileName)
-			write_gin(currentMol, ginFileName)
-			ginFile = open(ginFileName, 'r')
-			goutFile = open(goutFileName, 'w')
-			out = run_gulp(ginFile, goutFile)
-			ginFile.close()
-			goutFile.close()
-			if out != 0:
-				print("error in GULP")
-				break
-			else:
+			if cfg.program == "gulp":
+				write_gin(currentMol, ginFileName)
+				out = run_gulp_para(ginFileName, cfg.nProc)
+				if out != 0:
+					print("error in GULP")
+					break
 				currentMol = read_gout(goutFileName)
-				currentMol.set_bonds()
-				rubbish = rubbish_check(currentMol)
-				if rubbish:
-					print(rubbish)
-					return rubbish
-				# condensed = condense(currentMol)
-				# if condensed:
-					# newMol = condensed
-					# ginFileName = "amorph_" + str(i+2) + "_c.gin"
-					# goutFileName = "amorph_" + str(i+2) + "_c.gout"
-					# write_gin(newMol, ginFileName)
-					# ginFile = open(ginFileName, 'r')
-					# goutFile = open(goutFileName, 'w')
-					# out = run_gulp(ginFile, goutFile)
-					# ginFile.close()
-					# goutFile.close()
-					# newMol = read_gout(goutFileName)
-					# newMol.set_bonds()
-					# rubbish = rubbish_check(newMol)
-					# if not rubbish:
-						# currentMol = newMol
-						# print("New condensed structure is used.")
-					# else:
-						# print('Error after condensation: ' + rubbish + '\nPrimary structure is used.')
-		return currentMol
-
-def amorph_gen_para(inputLine, bondType, nProc, method="connector"):
-	inputText = inputLine
-	print(inputText)
-	inputText = inputText.split()
-	print(inputText)
-	if len(inputText) < 2 or len(inputText) % 2 == 1:
-		print("Input is incorrect, try again:")
-		amorph_gen(bondType)
-	else:
-		structures = set()
-		structureList = []
-		for i in range(0, len(inputText), 2):
-			m = im(inputText[i])
-			m.set_bonds()
-			structures.add(m)
-			for j in range(0,int(inputText[i+1])): 
-				structureList.append(m.id)
-				print("Adding to list: " + m.name)
-		currentMol = structureList.pop(0)
-		random.shuffle(structureList)
-		for structure in structures:
-			if currentMol == structure.id:
-				# currentMol = copy.deepcopy(structure)
-				currentMol = mol_copy(structure)
-				print("Starting from " + currentMol.name)
-				break
-		count = len(structureList)
-		for i in range(0, count):
-			print('\n\nStep: ' + str(i+2))
-			molAdd = structureList.pop()
-			for structure in structures:
-				if molAdd == structure.id:
-					# molAdd = copy.deepcopy(structure)
-					molAdd = mol_copy(structure)
-					print("In this step is added: " + molAdd.name)
-					break
-			for trial in range(0, 10):
-				newMol = join(currentMol, molAdd, bondType)
-				rubbish = rubbish_check(newMol)
-				if not rubbish:
-					currentMol = newMol
-					print("New structure found in trial no. " + str(trial+1))
-					break
-				else:
-					print("Trial no. " + str(trial+1) + " has failed due to: " + rubbish)
-					if trial == 9:
-						print("Limit of trials has been reached.")
-						return currentMol
-			condensed = condense(currentMol, method)
-			if condensed:
-				currentMol = condensed
-				ginFileName = "amorph_" + "{:03d}".format(i+2) + "_c.gin"
-				goutFileName = "amorph_" + "{:03d}".format(i+2) + "_c.gout"
-			else:
-				ginFileName = "amorph_" + "{:03d}".format(i+2) + ".gin"
-				goutFileName = "amorph_" + "{:03d}".format(i+2) + ".gout"
-			xyzInFileName = "amorph_" + "{:03d}".format(i+2) + "_0.xyz"
-			write_xyz(currentMol, xyzInFileName)
-			write_gin(currentMol, ginFileName)
-			out = run_gulp_para(ginFileName, nProc)
-			if out != 0:
-				print("error in GULP")
-				break
-			else:
-				currentMol = read_gout(goutFileName)
-				currentMol.set_bonds()
-				rubbish = rubbish_check(currentMol)
-				if rubbish:
-					print(rubbish)
-					return rubbish
-				# condensed = condense(currentMol)
-				# if condensed:
-					# newMol = condensed
-					# ginFileName = "amorph_" + str(i+2) + "_c.gin"
-					# goutFileName = "amorph_" + str(i+2) + "_c.gout"
-					# write_gin(newMol, ginFileName)
-					# ginFile = open(ginFileName, 'r')
-					# goutFile = open(goutFileName, 'w')
-					# out = run_gulp(ginFile, goutFile)
-					# ginFile.close()
-					# goutFile.close()
-					# newMol = read_gout(goutFileName)
-					# newMol.set_bonds()
-					# rubbish = rubbish_check(newMol)
-					# if not rubbish:
-						# currentMol = newMol
-						# print("New condensed structure is used.")
-					# else:
-						# print('Error after condensation: ' + rubbish + '\nPrimary structure is used.')
-		return currentMol
-
-def amorph_gen_no_gulp(inputLine, bondType):
-	# inputText = input("Please, give names of input structures files followed by their quantities, separated with spaces:")
-	inputText = inputLine
-	print(inputText)
-	inputText = inputText.split()
-	print(inputText)
-	if len(inputText) < 2 or len(inputText) % 2 == 1:
-		print("Input is incorrect, try again:")
-		amorph_gen(bondType)
-	else:
-		structures = set()
-		structureList = []
-		for i in range(0, len(inputText), 2):
-			m = im(inputText[i])
-			m.set_bonds()
-			structures.add(m)
-			for j in range(0,int(inputText[i+1])): 
-				structureList.append(m.id)
-				print("Adding to list: " + m.name)
-		currentMol = structureList.pop(0)
-		random.shuffle(structureList)
-		for structure in structures:
-			if currentMol == structure.id:
-				# currentMol = copy.deepcopy(structure)
-				currentMol = mol_copy(structure)
-				print("Starting from " + currentMol.name)
-				break
-		count = len(structureList)
-		for i in range(0, count):
-			print('\n\nStep: ' + str(i+2))
-			molAdd = structureList.pop()
-			for structure in structures:
-				if molAdd == structure.id:
-					# molAdd = copy.deepcopy(structure)
-					molAdd = mol_copy(structure)
-					print("In this step is added: " + molAdd.name)
-					break
-			for trial in range(0, 10):
-				newMol = join(currentMol, molAdd, bondType)
-				rubbish = rubbish_check(newMol)
-				if not rubbish:
-					currentMol = newMol
-					print("New structure found in trial no. " + str(trial+1))
-					break
-				else:
-					print("Trial no. " + str(trial+1) + " has failed due to: " + rubbish)
-					if trial == 9:
-						print("Limit of trials has been reached.")
-						return currentMol
-			condensed = condense(currentMol)
-			if condensed:
-				currentMol = condensed
-				# ginFileName = "amorph_" + "{:03d}".format(i+2) + "_c.gin"
-				# goutFileName = "amorph_" + "{:03d}".format(i+2) + "_c.gout"
-			# else:
-				# ginFileName = "amorph_" + "{:03d}".format(i+2) + ".gin"
-				# goutFileName = "amorph_" + "{:03d}".format(i+2) + ".gout"
-			xyzInFileName = "amorph_" + "{:03d}".format(i+2) + "_0.xyz"
-			write_xyz(currentMol, xyzInFileName)
-			# write_gin(currentMol, ginFileName)
-			# ginFile = open(ginFileName, 'r')
-			# goutFile = open(goutFileName, 'w')
-			# out = run_gulp(ginFile, goutFile)
-			# ginFile.close()
-			# goutFile.close()
-			# if out != 0:
-				# print("error in GULP")
-				# break
-			# else:
-				# currentMol = read_gout(goutFileName)
 			currentMol.set_bonds()
 			rubbish = rubbish_check(currentMol)
 			if rubbish:
 				print(rubbish)
 				return rubbish
-				# condensed = condense(currentMol)
-				# if condensed:
-					# newMol = condensed
-					# ginFileName = "amorph_" + str(i+2) + "_c.gin"
-					# goutFileName = "amorph_" + str(i+2) + "_c.gout"
-					# write_gin(newMol, ginFileName)
-					# ginFile = open(ginFileName, 'r')
-					# goutFile = open(goutFileName, 'w')
-					# out = run_gulp(ginFile, goutFile)
-					# ginFile.close()
-					# goutFile.close()
-					# newMol = read_gout(goutFileName)
-					# newMol.set_bonds()
-					# rubbish = rubbish_check(newMol)
-					# if not rubbish:
-						# currentMol = newMol
-						# print("New condensed structure is used.")
-					# else:
-						# print('Error after condensation: ' + rubbish + '\nPrimary structure is used.')
 		return currentMol
 		
-def ag(inputLine):
-	start = time.time()
-	amorph_gen(inputLine, 'O-H')
-	end = time.time()
-	print('\n\nStructure built in ' + str(end - start) + ' s. ')
-
-def agng(inputLine):
-	start = time.time()
-	amorph_gen_no_gulp(inputLine, 'O-H')
-	end = time.time()
-	print('\n\nStructure built in ' + str(end - start) + ' s. ')
+def ag(inputLine, cfg = config):
+	return agp(inputLine, cfg)
 	
 def agp(inputLine, cfg = config):
 	start = time.time()
-	mol = amorph_gen_para(inputLine, cfg.connectionType, cfg.nProc)
+	mol = amorph_gen_para(inputLine, 'O-H')
 	end = time.time()
 	print('\n\nStructure built in ' + str(end - start) + ' s. ')
 	return mol
 	
-def saturate(mol, method="connector"):
-	iter = 0
-	currentMol = mol_copy(mol)
-	while 1:
-		iter += 1
-		condensed = condense(currentMol, method)
-		if condensed:
-			newMol = condensed
-			ginFileName = "sat_" + "{:03d}".format(iter) + ".gin"
-			xyzFileName = "sat_" + "{:03d}".format(iter) + "_0.xyz"
-			goutFileName = "sat_" + "{:03d}".format(iter) + ".gout"
-			write_gin(newMol, ginFileName)
-			write_xyz(newMol, xyzFileName)
-			ginFile = open(ginFileName, 'r')
-			goutFile = open(goutFileName, 'w')
-			out = run_gulp(ginFile, goutFile)
-			ginFile.close()
-			goutFile.close()
-			newMol = read_gout(goutFileName)
-			newMol.set_bonds()
-			rubbish = rubbish_check(newMol)
-			if not rubbish:
-				currentMol = newMol
-				print("New condensed structure is used.")
-			else:
-				print('Error after condensation: ' + rubbish + '\nPrimary structure is used.')
-		else:
-			return currentMol
+def saturate(mol, cfg = config):
+	return saturate_para(mol, cfg)
 			
 def saturate_para(mol, cfg = config):
 	iter = 0
@@ -1486,7 +1540,6 @@ def saturate_para(mol, cfg = config):
 			return currentMol
 	
 def sp(mol, cfg = config):
-	currentMol = saturate_para(mol, cfg)
-	return currentMol
-	
+	return saturate_para(mol, cfg)
+
 
